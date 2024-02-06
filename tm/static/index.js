@@ -206,4 +206,3 @@ function reset() {
   STATUS.innerText = 'No data collected';
   console.log('Tensors in memory: ' + tf.memory().numTensors);
 }
-
