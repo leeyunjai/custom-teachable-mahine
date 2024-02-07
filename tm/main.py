@@ -44,6 +44,18 @@ def vision_loop():
 async def f(request:Request):
   return templates.TemplateResponse("index.html", {"request": request})
 
+@app.post("/upload")
+async def upload_files(model_json: UploadFile = File(...), model_weights_bin: UploadFile = File(...)):
+  with open("model.json", "wb") as json_file:
+    json_content = await model_json.read()
+    json_file.write(json_content)
+
+  with open("model.weights.bin", "wb") as weights_file:
+    weights_content = await model_weights_bin.read()
+    weights_file.write(weights_content)
+
+  return {"message": "모델 파일이 성공적으로 업로드되었습니다."}
+
 @app.sio.on('control_cam')
 async def f(sid, d=None):
   global vision_en

@@ -41,16 +41,16 @@ async function loadMobileNetFeatureModel() {
   const URL = '../static/model.json';
   mobilenet1 = await tf.loadLayersModel(URL);
   STATUS.innerText = 'MobileNet v2 loaded successfully!';
-  mobilenet1.summary();
+  //mobilenet1.summary();
  
   const layer = mobilenet1.getLayer('global_average_pooling2d_1');
   mobilenet = tf.model({inputs: mobilenet1.inputs, outputs: layer.output}); 
-  mobilenet.summary();
+  //mobilenet.summary();
 
   // Warm up the model by passing zeros through it once.
   tf.tidy(function () {
     let answer = mobilenet.predict(tf.zeros([1, MOBILE_NET_INPUT_HEIGHT, MOBILE_NET_INPUT_WIDTH, 3]));
-    console.log(answer.shape);
+    //console.log(answer.shape);
   });
 }
 
@@ -58,7 +58,7 @@ loadMobileNetFeatureModel();
 let model = tf.sequential();
 model.add(tf.layers.dense({ inputShape: [1280], units: 128, activation: 'relu' }));
 model.add(tf.layers.dense({ units: CLASS_NAMES.length, activation: 'softmax' }));
-model.summary();
+//model.summary();
 
 model.compile({
   optimizer: 'adam',
@@ -151,7 +151,6 @@ async function trainAndPredict() {
   oneHotOutputs.dispose();
   inputsAsTensor.dispose();
   STATUS.innerText = 'Trained Ok';
- 
 
 /*
   let combinedModel = tf.sequential();
@@ -166,7 +165,15 @@ async function trainAndPredict() {
   combinedModel.summary();
   await combinedModel.save('downloads://my-model');
 */
-  await model.save('downloads://my-model');
+  //await model.save('downloads://my-model');
+  console.log(`http://${location.hostname}:30000/upload`)
+  //await model.save(`http://${location.hostname}:30000/upload`);
+
+
+  await model.save(tf.io.browserHTTPRequest(
+    `http://${location.hostname}:30000/upload`,
+    {method: 'POST', headers: {'header_key_1': 'header_value_1'} }));
+
   predict = true;
   predictLoop();
 }
