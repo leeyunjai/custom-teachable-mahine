@@ -38,6 +38,13 @@ let mobilenet1 = undefined;
 
 async function loadMobileNetFeatureModel() {
   //const URL = 'https://storage.googleapis.com/jmstore/TensorFlowJS/EdX/SavedModels/mobilenet-v2/model.json';
+/*
+	 const modelUrl = 'https://tfhub.dev/google/imagenet/mobilenet_v2_140_224/classification/2';
+	 const model = await tf.loadGraphModel(modelUrl, {fromTFHub: true});
+
+	 const modelUrl = 'https://storage.googleapis.com/tfjs-models/savedmodel/mobilenet_v2_1.0_224/model.json';
+	 const model = await tf.loadGraphModel(modelUrl);
+*/
   const URL = '../static/model.json';
   mobilenet1 = await tf.loadLayersModel(URL);
   STATUS.innerText = 'MobileNet v2 loaded successfully!';
