@@ -17,16 +17,15 @@ RESET_BUTTON.addEventListener('click', reset);
 // Just add more buttons in HTML to allow classification of more classes of data!
 let dataCollectorButtons = document.querySelectorAll('button.dataCollector');
 for (let i = 0; i < dataCollectorButtons.length; i++) {
-  console.log(dataCollectorButtons)
+
   dataCollectorButtons[i].addEventListener('mousedown', gatherDataForClass);
   dataCollectorButtons[i].addEventListener('mouseup', gatherDataForClass);
   // For mobile.
   dataCollectorButtons[i].addEventListener('touchend', gatherDataForClass);
-
   // Populate the human readable names for classes.
   CLASS_NAMES.push(dataCollectorButtons[i].getAttribute('data-name'));
 }
-
+console.log(dataCollectorButtons)
 let mobilenet = undefined;
 let gatherDataState = STOP_DATA_GATHER;
 let trainingDataInputs = [];
@@ -34,42 +33,43 @@ let trainingDataOutputs = [];
 let examplesCount = [];
 let predict = false;
 
-let mobilenet1 = undefined;
-
+let tmp_model = undefined;
 async function loadMobileNetFeatureModel() {
-  //const URL = 'https://storage.googleapis.com/jmstore/TensorFlowJS/EdX/SavedModels/mobilenet-v2/model.json';
-/*
-	 const modelUrl = 'https://tfhub.dev/google/imagenet/mobilenet_v2_140_224/classification/2';
-	 const model = await tf.loadGraphModel(modelUrl, {fromTFHub: true});
+  /*
+  const URL = 'https://storage.googleapis.com/jmstore/TensorFlowJS/EdX/SavedModels/mobilenet-v2/model.json';
+	const modelUrl = 'https://tfhub.dev/google/imagenet/mobilenet_v2_140_224/classification/2';
+	const model = await tf.loadGraphModel(modelUrl, {fromTFHub: true});
 
-	 const modelUrl = 'https://storage.googleapis.com/tfjs-models/savedmodel/mobilenet_v2_1.0_224/model.json';
-	 const model = await tf.loadGraphModel(modelUrl);
-*/
+	const modelUrl = 'https://storage.googleapis.com/tfjs-models/savedmodel/mobilenet_v2_1.0_224/model.json';
+	const model = await tf.loadGraphModel(modelUrl);
+  */
   const URL = '../static/model.json';
-  mobilenet1 = await tf.loadLayersModel(URL);
-  STATUS.innerText = 'MobileNet v2 loaded successfully!';
+  tmp_model = await tf.loadLayersModel(URL);
+  
+  STATUS.innerText = '이미지 분류 모델 초기화 완료';
   //mobilenet1.summary();
  
-  const layer = mobilenet1.getLayer('global_average_pooling2d_1');
-  mobilenet = tf.model({inputs: mobilenet1.inputs, outputs: layer.output}); 
+  const layer = tmp_model.getLayer('global_average_pooling2d_1');
+  mobilenet = tf.model({inputs: tmp_model.inputs, outputs: layer.output}); 
   //mobilenet.summary();
 
   // Warm up the model by passing zeros through it once.
   tf.tidy(function () {
     let answer = mobilenet.predict(tf.zeros([1, MOBILE_NET_INPUT_HEIGHT, MOBILE_NET_INPUT_WIDTH, 3]));
-    //console.log(answer.shape);
+    console.log(answer.shape);
   });
 }
 
 loadMobileNetFeatureModel();
 let model = tf.sequential();
+//model.add(mobilenet);
 model.add(tf.layers.dense({ inputShape: [1280], units: 128, activation: 'relu' }));
 model.add(tf.layers.dense({ units: CLASS_NAMES.length, activation: 'softmax' }));
-//model.summary();
+model.summary();
 
 model.compile({
   optimizer: 'adam',
-  loss: (CLASS_NAMES.length === 2) ? 'binaryCrossentropy' : 'categoricalCrossentropy',
+  loss: /*(CLASS_NAMES.length === 2) ? 'binaryCrossentropy' : */'categoricalCrossentropy',
   metrics: ['accuracy']
 });
 
@@ -159,28 +159,10 @@ async function trainAndPredict() {
   inputsAsTensor.dispose();
   STATUS.innerText = 'Trained Ok';
 
-/*
-  let combinedModel = tf.sequential();
-  combinedModel.add(mobilenet1);
-  combinedModel.add(model);
-  
-  combinedModel.compile({
-    optimizer: 'adam',
-    loss: (CLASS_NAMES.length === 2) ? 'binaryCrossentropy': 'categoricalCrossentropy'
-  });
-  
-  combinedModel.summary();
-  await combinedModel.save('downloads://my-model');
-*/
-  //await model.save('downloads://my-model');
-  console.log(`http://${location.hostname}:30000/upload`)
-  //await model.save(`http://${location.hostname}:30000/upload`);
-
-
-  await model.save(tf.io.browserHTTPRequest(
-    `http://${location.hostname}:30000/upload`,
-    {method: 'POST', headers: {'header_key_1': 'header_value_1'} }));
-
+  console.log(CLASS_NAMES)
+  await model.save(
+    tf.io.browserHTTPRequest(`http://${location.hostname}:30000/upload`, {
+      requestInit: {method: 'POST', headers: {'classnames':CLASS_NAMES}}}));
   predict = true;
   predictLoop();
 }

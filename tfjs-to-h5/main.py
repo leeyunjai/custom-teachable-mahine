@@ -2,8 +2,8 @@ import tensorflow as tf
 import keras_tfjs_loader
 import json
 
-config_json_path = 'my-model.json'
-h5_path = 'my-model.h5'
+config_json_path = 'model.json'
+h5_path = 'model.h5'
 
 with open(config_json_path, 'rt') as f:
   try:

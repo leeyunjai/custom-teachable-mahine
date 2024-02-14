@@ -45,7 +45,11 @@ async def f(request:Request):
   return templates.TemplateResponse("index.html", {"request": request})
 
 @app.post("/upload")
-async def upload_files(model_json: UploadFile = File(...), model_weights_bin: UploadFile = File(...)):
+async def upload_files(request:Request, model_json: UploadFile = File(...), model_weights_bin: UploadFile = File(...)):
+  print(request.headers.get('classnames'))
+  with open("labels.txt", "w") as f:
+    f.write(request.headers.get('classnames'))
+
   with open("model.json", "wb") as json_file:
     json_content = await model_json.read()
     json_file.write(json_content)
