@@ -107,7 +107,7 @@ function gatherDataForClass() {
   dataGatherLoop();
 }
 
-function calculateFeaturesOnCurrentFrame(base64ImageData) {
+function calculateFeaturesOnCurrentFrame() {
   return tf.tidy(function () {
     const imageTensor = tf.browser.fromPixels(image);
     const resizedTensor = tf.image.resizeBilinear(imageTensor, [MOBILE_NET_INPUT_HEIGHT, MOBILE_NET_INPUT_WIDTH], true);
@@ -142,6 +142,7 @@ function dataGatherLoop() {
 async function trainAndPredict() {
   predict = false;
   STATUS.innerText = 'Training ...';
+  console.log(trainingDataOutputs)
   tf.util.shuffleCombo(trainingDataInputs, trainingDataOutputs);
 
   let outputsAsTensor = tf.tensor1d(trainingDataOutputs, 'int32');
