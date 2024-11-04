@@ -181,9 +181,7 @@
 <!DOCTYPE html>
 <html lang="ko">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>이미지 학습 도구</title>
+    <script src="static/jszip.min.js"></script>
     <script src="static/tf.min-3.11.0.js"></script>
 </head>
 <body>
@@ -192,7 +190,7 @@
         <div class="sidebar">
             <h2>클래스 관리</h2>
             <div id="class-management">
-                <input type="text" id="class-name" placeholder="클래스 이름을 입력하세요">
+                <input type="text" id="class-name" placeholder="클래스 이름을 입력하세요" onkeydown="if (event.key === 'Enter') addClass()">
                 <button onclick="addClass()">클래스 추가</button>
             </div>
             <div id="class-list">
@@ -220,8 +218,8 @@
             <div id="training-buttons">
                 <button onclick="trainAndPredict()">모델 학습 시작</button>
                 <button onclick="togglePredictImage()">미리보기 토글</button>
-                <button onclick="exportModel()">모델 내보내기</button>
-                <label for="model-upload" class="upload-button">모델 불러오기</label>
+                <button onclick="exportModelAsZip()">모델 내보내기 (ZIP)</button>
+                <label for="model-upload" class="upload-button">모델 불러오기 (ZIP)</label>
                 <input type="file" id="model-upload" onchange="importModel(event)" style="display:none" />
             </div>
 
@@ -293,6 +291,30 @@
                 classContainer.onclick = () => {
                     selectClass(className);
                 };
+                // Add download button for each class
+                const downloadButton = document.createElement('button');
+                downloadButton.innerText = `${className} 데이터셋 다운로드`;
+                downloadButton.onclick = (e) => {
+                    e.stopPropagation();
+                    downloadClassDataset(className);
+                };
+                classContainer.appendChild(downloadButton);
+                // Add upload button for each class
+                const uploadButton = document.createElement('input');
+                uploadButton.type = 'file';
+                uploadButton.accept = '.zip';
+                uploadButton.style.display = 'none';
+                uploadButton.onchange = (e) => {
+                    uploadClassDataset(e, className);
+                };
+                const uploadButtonLabel = document.createElement('label');
+                uploadButtonLabel.innerText = `${className} 데이터셋 업로드`;
+                uploadButtonLabel.classList.add('upload-button');
+                uploadButtonLabel.onclick = () => {
+                    uploadButton.click();
+                };
+                classContainer.appendChild(uploadButton);
+                classContainer.appendChild(uploadButtonLabel);
                 document.getElementById('class-list').appendChild(classContainer);
                 document.getElementById('class-name').value = '';
             }
@@ -348,17 +370,19 @@
             imageElement.className = 'thumbnail';
             imageElement.onclick = function() {
                 if (confirm('이 이미지를 삭제하시겠습니까?')) {
-                    const index = trainingDataInputs.indexOf(imgTensor);
+                    const index = trainingDataInputs.findIndex(input => input === imageElement.tensor);
                     if (index > -1) {
+                        trainingDataInputs[index].dispose();
                         trainingDataInputs.splice(index, 1);
                         trainingDataOutputs.splice(index, 1);
-                        imageElement.remove();
                     }
+                    imageElement.remove();
                 }
             };
             document.querySelector(`#class-${className} .image-collection`).appendChild(imageElement);
 
             const imgTensor = tf.browser.fromPixels(canvas).resizeNearestNeighbor([MOBILE_NET_INPUT_HEIGHT, MOBILE_NET_INPUT_WIDTH]).toFloat().div(tf.scalar(255));
+            imageElement.tensor = imgTensor;
             const features = mobilenet.predict(imgTensor.expandDims()).squeeze();
 
             trainingDataInputs.push(features);
@@ -367,6 +391,11 @@
 
         // Train model using MobileNet for transfer learning
         async function trainAndPredict() {
+            if (trainingDataInputs.length === 0) {
+                alert('학습할 데이터가 없습니다. 이미지를 추가해주세요.');
+                return;
+            }
+
             predict = false;
             document.getElementById('training-progress').innerText = 'Training ...';
             tf.util.shuffleCombo(trainingDataInputs, trainingDataOutputs);
@@ -447,6 +476,94 @@
             img.dispose();
             features.dispose();
             prediction.dispose();
+        }
+
+        // Export trained model to ZIP
+        async function exportModelAsZip() {
+            if (!model) {
+                alert('먼저 모델을 학습하세요');
+                return;
+            }
+            const zip = new JSZip();
+            const modelSavePath = 'indexeddb://trained-model';
+            await model.save(modelSavePath);
+            const modelArtifacts = await tf.io.getSaveHandlers(modelSavePath)[0].load();
+            zip.file('model.json', JSON.stringify(modelArtifacts.modelTopology));
+            for (const [index, bin] of modelArtifacts.weightData.entries()) {
+                zip.file(`weights${index}.bin`, new Uint8Array(bin));
+            }
+            zip.file('labels.txt', CLASS_NAMES.join('\n'));
+            zip.generateAsync({ type: 'blob' }).then(function(content) {
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(content);
+                a.download = 'trained-model.zip';
+                a.click();
+            });
+        }
+
+        // Import model from ZIP
+        async function importModel(event) {
+            const file = event.target.files[0];
+            if (file) {
+                const zip = await JSZip.loadAsync(file);
+                const modelJson = await zip.file('model.json').async('string');
+                const weightKeys = Object.keys(zip.files).filter(name => name.endsWith('.bin'));
+                const weightData = await Promise.all(weightKeys.map(key => zip.file(key).async('arraybuffer')));
+                const handler = tf.io.fromMemory({ modelTopology: JSON.parse(modelJson), weightData: weightData });
+                model = await tf.loadLayersModel(handler);
+
+                const labelsFile = zip.file('labels.txt');
+                if (labelsFile) {
+                    const labelsText = await labelsFile.async('string');
+                    CLASS_NAMES.splice(0, CLASS_NAMES.length, ...labelsText.split('\n'));
+                }
+                alert('모델이 성공적으로 불러와졌습니다.');
+                document.getElementById('training-progress').innerText = '모델이 불러와졌습니다.';
+            }
+        }
+
+        // Download dataset as ZIP
+        function downloadClassDataset(className) {
+            const zip = new JSZip();
+            const classFolder = zip.folder(className);
+            const imageElements = document.querySelectorAll(`#class-${className} .image-collection img`);
+            imageElements.forEach((imgElement, index) => {
+                const dataURL = imgElement.src;
+                const binary = atob(dataURL.split(',')[1]);
+                const array = [];
+                for (let i = 0; i < binary.length; i++) {
+                    array.push(binary.charCodeAt(i));
+                }
+                classFolder.file(`image_${index}.png`, new Uint8Array(array), { binary: true });
+            });
+            zip.generateAsync({ type: 'blob' }).then(function(content) {
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(content);
+                a.download = `${className}_dataset.zip`;
+                a.click();
+            });
+        }
+
+        // Upload dataset from ZIP
+        async function uploadClassDataset(event, className) {
+            const file = event.target.files[0];
+            if (file) {
+                const zip = await JSZip.loadAsync(file);
+                const imageFiles = Object.keys(zip.files).filter(name => name.endsWith('.png'));
+                for (const imageName of imageFiles) {
+                    const imageData = await zip.file(imageName).async('base64');
+                    const imgElement = document.createElement('img');
+                    imgElement.src = `data:image/png;base64,${imageData}`;
+                    imgElement.className = 'thumbnail';
+                    imgElement.onclick = function() {
+                        if (confirm('이 이미지를 삭제하시겠습니까?')) {
+                            imgElement.remove();
+                        }
+                    };
+                    document.querySelector(`#class-${className} .image-collection`).appendChild(imgElement);
+                }
+                alert(`${className} 데이터셋이 업로드되었습니다.`);
+            }
         }
 
         // Start the camera when the page loads
