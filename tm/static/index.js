@@ -1,575 +1,203 @@
-<style>
-    body {
-        font-family: 'Nanum Gothic', sans-serif;
-        background-color: #f9fafb;
-        color: #333;
-        margin: 0;
-        padding: 0;
-        display: flex;
-        justify-content: center;
-        align-items: stretch;
-        min-height: 100vh;
-        overflow: hidden;
+const STATUS = document.getElementById('status');
+const ENABLE_CAM_BUTTON = document.getElementById('enableCam');
+const DISABLE_CAM_BUTTON = document.getElementById('disableCam');
+const RESET_BUTTON = document.getElementById('reset');
+const TRAIN_BUTTON = document.getElementById('train');
+const MOBILE_NET_INPUT_WIDTH = 224;
+const MOBILE_NET_INPUT_HEIGHT = 224;
+const STOP_DATA_GATHER = -1;
+const CLASS_NAMES = [];
+const socket = io(`http://${location.hostname}:30000`, {path: "/ws/socket.io",});
+
+ENABLE_CAM_BUTTON.addEventListener('click', enableCam);
+DISABLE_CAM_BUTTON.addEventListener('click', disableCam);
+TRAIN_BUTTON.addEventListener('click', trainAndPredict);
+RESET_BUTTON.addEventListener('click', reset);
+
+// Just add more buttons in HTML to allow classification of more classes of data!
+let dataCollectorButtons = document.querySelectorAll('button.dataCollector');
+for (let i = 0; i < dataCollectorButtons.length; i++) {
+
+  dataCollectorButtons[i].addEventListener('mousedown', gatherDataForClass);
+  dataCollectorButtons[i].addEventListener('mouseup', gatherDataForClass);
+  // For mobile.
+  dataCollectorButtons[i].addEventListener('touchend', gatherDataForClass);
+  // Populate the human readable names for classes.
+  CLASS_NAMES.push(dataCollectorButtons[i].getAttribute('data-name'));
+}
+console.log(dataCollectorButtons)
+let mobilenet = undefined;
+let gatherDataState = STOP_DATA_GATHER;
+let trainingDataInputs = [];
+let trainingDataOutputs = [];
+let examplesCount = [];
+let predict = false;
+
+let tmp_model = undefined;
+async function loadMobileNetFeatureModel() {
+  /*
+  const URL = 'https://storage.googleapis.com/jmstore/TensorFlowJS/EdX/SavedModels/mobilenet-v2/model.json';
+	const modelUrl = 'https://tfhub.dev/google/imagenet/mobilenet_v2_140_224/classification/2';
+	const model = await tf.loadGraphModel(modelUrl, {fromTFHub: true});
+	const modelUrl = 'https://storage.googleapis.com/tfjs-models/savedmodel/mobilenet_v2_1.0_224/model.json';
+	const model = await tf.loadGraphModel(modelUrl);
+  */
+  const URL = '../static/model.json';
+  tmp_model = await tf.loadLayersModel(URL);
+
+  STATUS.innerText = '이미지 분류 모델 초기화 완료';
+  //mobilenet1.summary();
+
+  const layer = tmp_model.getLayer('global_average_pooling2d_1');
+  mobilenet = tf.model({inputs: tmp_model.inputs, outputs: layer.output}); 
+  //mobilenet.summary();
+
+  // Warm up the model by passing zeros through it once.
+  tf.tidy(function () {
+    let answer = mobilenet.predict(tf.zeros([1, MOBILE_NET_INPUT_HEIGHT, MOBILE_NET_INPUT_WIDTH, 3]));
+    console.log(answer.shape);
+  });
+}
+
+loadMobileNetFeatureModel();
+let model = tf.sequential();
+//model.add(mobilenet);
+model.add(tf.layers.dense({ inputShape: [1280], units: 128, activation: 'relu' }));
+model.add(tf.layers.dense({ units: CLASS_NAMES.length, activation: 'softmax' }));
+model.summary();
+
+model.compile({
+  optimizer: 'adam',
+  loss: /*(CLASS_NAMES.length === 2) ? 'binaryCrossentropy' : */'categoricalCrossentropy',
+  metrics: ['accuracy']
+});
+
+function enableCam() {
+  image.style.display = 'inline-block';
+  socket.emit('control_cam', true);
+}
+function disableCam() {
+  image.style.display = 'none';
+  socket.emit('control_cam', false);
+}
+
+const image = document.getElementById('view');
+socket.on('image', function (data) {
+  image.src = 'data:image/jpeg;utf-8;base64,' + data;
+
+  if (predict) {
+    image.onload = async function () {
+      const imageTensor = tf.browser.fromPixels(image);
+      const resizedTensor = tf.image.resizeBilinear(imageTensor, [MOBILE_NET_INPUT_HEIGHT, MOBILE_NET_INPUT_WIDTH], true);
+      const normalizedTensor = resizedTensor.div(255);
+      const batchedTensor = normalizedTensor.expandDims();
+      const features = mobilenet.predict(batchedTensor).squeeze();
+      imageTensor.dispose();
+      normalizedTensor.dispose();
+      batchedTensor.dispose();
+      predictImage(features);
+    };
+  }
+});
+
+function gatherDataForClass() {
+  let classNumber = parseInt(this.getAttribute('data-1hot'));
+  gatherDataState = (gatherDataState === STOP_DATA_GATHER) ? classNumber : STOP_DATA_GATHER;
+  dataGatherLoop();
+}
+
+function calculateFeaturesOnCurrentFrame() {
+  return tf.tidy(function () {
+    const imageTensor = tf.browser.fromPixels(image);
+    const resizedTensor = tf.image.resizeBilinear(imageTensor, [MOBILE_NET_INPUT_HEIGHT, MOBILE_NET_INPUT_WIDTH], true);
+    const normalizedTensor = resizedTensor.div(255);
+    const batchedTensor = normalizedTensor.expandDims();
+    return mobilenet.predict(batchedTensor).squeeze();
+  });
+}
+
+function dataGatherLoop() {
+  // Only gather data if webcam is on and a relevant button is pressed.
+  if (gatherDataState !== STOP_DATA_GATHER) {
+    let imageFeatures = calculateFeaturesOnCurrentFrame();
+    trainingDataInputs.push(imageFeatures);
+    trainingDataOutputs.push(gatherDataState);
+
+    if (examplesCount[gatherDataState] === undefined) {
+      examplesCount[gatherDataState] = 0;
     }
-    .container {
-        display: flex;
-        width: 100vw;
-        height: 100vh;
+    examplesCount[gatherDataState]++;
+
+    STATUS.innerText = '';
+    for (let n = 0; n < CLASS_NAMES.length; n++) {
+      if (examplesCount[n] === undefined) examplesCount[n] = 0;
+      STATUS.innerText += CLASS_NAMES[n] + ' data count: ' + examplesCount[n] + '. ';
     }
-    .sidebar {
-        width: 25%;
-        padding: 20px;
-        background-color: #ffffff;
-        box-shadow: 2px 0 5px rgba(0, 0, 0, 0.1);
-        overflow-y: auto;
-    }
-    .main-content {
-        width: 75%;
-        padding: 20px;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: space-around;
-        position: relative;
-    }
-    .sidebar h2 {
-        text-align: center;
-        margin-bottom: 20px;
-    }
-    #class-management {
-        display: flex;
-        justify-content: space-between;
-        margin-bottom: 20px;
-    }
-    #class-name {
-        padding: 12px;
-        font-size: 1.2em;
-        flex-grow: 1;
-        margin-right: 10px;
-        border: 1px solid #ccc;
-        border-radius: 5px;
-        transition: border-color 0.3s;
-    }
-    #class-name:focus {
-        border-color: #4CAF50;
-    }
-    button {
-        padding: 12px 20px;
-        font-size: 1.1em;
-        margin: 8px;
-        border: none;
-        border-radius: 8px;
-        background-color: #4CAF50;
-        color: white;
-        cursor: pointer;
-        transition: background-color 0.3s, transform 0.2s;
-    }
-    button:hover {
-        background-color: #45a049;
-        transform: scale(1.05);
-    }
-    .class-container {
-        cursor: pointer;
-        margin: 10px 0;
-        border: 1px solid #ccc;
-        border-radius: 5px;
-        padding: 10px;
-        background-color: #f0f0f0;
-        transition: background-color 0.3s, transform 0.3s;
-    }
-    .class-container:hover {
-        background-color: #e0f7fa;
-        transform: scale(1.02);
-    }
-    .class-container.selected {
-        border: 2px solid #4CAF50;
-        background-color: #dcedc8;
-    }
-    .image-collection {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 5px;
-        margin-top: 10px;
-    }
-    .thumbnail {
-        width: 60px;
-        height: 60px;
-        object-fit: cover;
-        border-radius: 5px;
-        box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
-        transition: transform 0.3s;
-    }
-    .thumbnail:hover {
-        transform: scale(1.1);
-    }
-    #camera-section {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        margin-bottom: 20px;
-        width: 100%;
-        max-width: 600px;
-    }
-    #camera { width: 100%; height: 400px; max-width: 600px; margin-bottom: 10px; }
-    #training-section {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 15px;
-        margin-bottom: 20px;
-        width: 100%;
-    }
-    #training-params {
-        display: flex;
-        justify-content: space-evenly;
-        gap: 10px;
-        margin-top: 15px;
-        width: 100%;
-        max-width: 600px;
-    }
-    #training-params label, #training-params input {
-        margin: 5px;
-    }
-    #training-buttons {
-        display: flex;
-        justify-content: space-evenly;
-        flex-wrap: wrap;
-        gap: 15px;
-        width: 100%;
-        max-width: 800px;
-    }
-    #progress-section {
-        margin-bottom: 20px;
-        width: 100%;
-        text-align: center;
-    }
-    #preview-status {
-        font-weight: bold;
-        color: #4CAF50;
-        animation: pulse 1s infinite;
-    }
-    @keyframes pulse {
-        0%, 100% { transform: scale(1); }
-        50% { transform: scale(1.1); }
-    }
-    @media (max-width: 600px) {
-        .container {
-            flex-direction: column;
-            align-items: stretch;
-        }
-        .sidebar {
-            width: 100%;
-            height: 40%;
-            padding: 10px;
-            overflow-y: auto;
-        }
-        .main-content {
-            width: 100%;
-            height: 60%;
-            padding: 10px;
-        }
-        #camera {
-            width: 100%;
-            height: 200px;
-        }
-        button {
-            padding: 10px;
-            font-size: 1em;
-        }
-    }
-</style>
-<!DOCTYPE html>
-<html lang="ko">
-<head>
-    <script src="static/jszip.min.js"></script>
-    <script src="static/tf.min-3.11.0.js"></script>
-</head>
-<body>
-    <div class="container">
-        <!-- Sidebar for class management -->
-        <div class="sidebar">
-            <h2>클래스 관리</h2>
-            <div id="class-management">
-                <input type="text" id="class-name" placeholder="클래스 이름을 입력하세요" onkeydown="if (event.key === 'Enter') addClass()">
-                <button onclick="addClass()">클래스 추가</button>
-            </div>
-            <div id="class-list">
-                <!-- Dynamically added classes and image collections will appear here -->
-            </div>
-        </div>
 
-        <!-- Main content for camera and model operations -->
-        <div class="main-content">
-            <!-- Camera Feed and Capture -->
-            <div id="camera-section">
-                <video id="camera" autoplay playsinline></video>
-                <button id="capture-button" onmousedown="startCapturingImages()" onmouseup="stopCapturingImages()" onmouseleave="stopCapturingImages()">이미지 캡처</button>
-            </div>
+    window.requestAnimationFrame(dataGatherLoop);
+  }
+}
 
-            <!-- Training Parameters -->
-            <div id="training-params">
-                <label for="epochs">에포크 수: </label>
-                <input type="number" id="epochs" value="15" min="1" max="100">
-                <label for="batch-size">배치 크기: </label>
-                <input type="number" id="batch-size" value="32" min="1" max="256">
-            </div>
+async function trainAndPredict() {
+  predict = false;
+  STATUS.innerText = 'Training ...';
+  console.log(trainingDataOutputs)
+  tf.util.shuffleCombo(trainingDataInputs, trainingDataOutputs);
 
-            <!-- Train, Export, and Import Model Buttons -->
-            <div id="training-buttons">
-                <button onclick="trainAndPredict()">모델 학습 시작</button>
-                <button onclick="togglePredictImage()">미리보기 토글</button>
-                <button onclick="exportModelAsZip()">모델 내보내기 (ZIP)</button>
-                <label for="model-upload" class="upload-button">모델 불러오기 (ZIP)</label>
-                <input type="file" id="model-upload" onchange="importModel(event)" style="display:none" />
-            </div>
+  let outputsAsTensor = tf.tensor1d(trainingDataOutputs, 'int32');
+  let oneHotOutputs = tf.oneHot(outputsAsTensor, CLASS_NAMES.length);
+  let inputsAsTensor = tf.stack(trainingDataInputs);
 
-            <!-- Training Progress -->
-            <div id="progress-section">
-                <p id="training-progress">학습이 시작되지 않았습니다</p>
-                <progress id="progress-bar" value="0" max="100"></progress>
-            </div>
+  let results = await model.fit(inputsAsTensor, oneHotOutputs, {
+    shuffle: true,
+    batchSize: 5,
+    epochs: 10,
+    callbacks: { onEpochEnd: logProgress }
+  });
+  outputsAsTensor.dispose();
+  oneHotOutputs.dispose();
+  inputsAsTensor.dispose();
+  STATUS.innerText = 'Trained Ok';
 
-            <!-- Prediction Result -->
-            <div id="prediction-section">
-                <h3>예측 결과:</h3>
-                <p id="prediction-result">아직 예측이 없습니다</p>
-                <p id="preview-status" style="visibility: hidden;"></p>
-            </div>
-        </div>
-    </div>
+  console.log(CLASS_NAMES)
+  await model.save(
+    tf.io.browserHTTPRequest(`http://${location.hostname}:30000/upload`, {
+      requestInit: {method: 'POST', headers: {'classnames':CLASS_NAMES}}}));
+  predict = true;
+  predictLoop();
+}
 
-    <script>
-        const MOBILE_NET_INPUT_WIDTH = 224;
-        const MOBILE_NET_INPUT_HEIGHT = 224;
-        const CLASS_NAMES = [];
-        let mobilenet;
-        let model;
-        let gatherDataState = -1;
-        let trainingDataInputs = [];
-        let trainingDataOutputs = [];
-        let examplesCount = [];
-        let predict = false;
-        let webcamStream;
-        let capturing = false;
-        let captureInterval;
-        let previewing = false;
-        let previewInterval = null;
+function logProgress(epoch, logs) {
+  console.log('Data for epoch ' + epoch, logs);
+  STATUS.innerText = 'Data for epoch ' + epoch + ', ' + JSON.stringify(logs);
+}
 
-        // Start webcam
-        async function startCamera() {
-            webcamStream = await navigator.mediaDevices.getUserMedia({ video: true });
-            document.getElementById('camera').srcObject = webcamStream;
-        }
+function predictImage(imageFeatures) {
+  tf.tidy(function () {
+    let prediction = model.predict(imageFeatures.expandDims()).squeeze();
+    let highestIndex = prediction.argMax().arraySync();
+    let predictionArray = prediction.arraySync();
+    STATUS.innerText = 'Prediction: ' + CLASS_NAMES[highestIndex] + ' with ' + Math.floor(predictionArray[highestIndex] * 100) + '% confidence';
+  });
+}
 
-        // Load MobileNet Feature Model
-        async function loadMobileNetFeatureModel() {
-            const URL = 'static/model.json';
-            let tmp_model = await tf.loadLayersModel(URL);
-            const layer = tmp_model.getLayer('global_average_pooling2d_1');
-            mobilenet = tf.model({inputs: tmp_model.inputs, outputs: layer.output});
+function predictLoop() {
+  if (predict) {
+    tf.tidy(function () {
+      let imageFeatures = calculateFeaturesOnCurrentFrame();
+      predictImage(imageFeatures);
+    });
+    window.requestAnimationFrame(predictLoop);
+  }
+}
 
-            // Warm up the model by passing zeros through it once.
-            tf.tidy(function () {
-                mobilenet.predict(tf.zeros([1, MOBILE_NET_INPUT_HEIGHT, MOBILE_NET_INPUT_WIDTH, 3]));
-            });
-        }
-
-        loadMobileNetFeatureModel().then(() => {
-            document.getElementById('training-progress').innerText = '모델이 준비되었습니다.';
-        });
-
-        // Add a new class
-        function addClass() {
-            const className = document.getElementById('class-name').value;
-            if (className && !CLASS_NAMES.includes(className)) {
-                CLASS_NAMES.push(className);
-                // Create new class container
-                const classContainer = document.createElement('div');
-                classContainer.className = 'class-container';
-                classContainer.id = `class-${className}`;
-                classContainer.innerHTML = `<h3 onclick="selectClass('${className}')">${className}</h3><div class="image-collection"></div>`;
-                classContainer.onclick = () => {
-                    selectClass(className);
-                };
-                // Add download button for each class
-                const downloadButton = document.createElement('button');
-                downloadButton.innerText = `${className} 데이터셋 다운로드`;
-                downloadButton.onclick = (e) => {
-                    e.stopPropagation();
-                    downloadClassDataset(className);
-                };
-                classContainer.appendChild(downloadButton);
-                // Add upload button for each class
-                const uploadButton = document.createElement('input');
-                uploadButton.type = 'file';
-                uploadButton.accept = '.zip';
-                uploadButton.style.display = 'none';
-                uploadButton.onchange = (e) => {
-                    uploadClassDataset(e, className);
-                };
-                const uploadButtonLabel = document.createElement('label');
-                uploadButtonLabel.innerText = `${className} 데이터셋 업로드`;
-                uploadButtonLabel.classList.add('upload-button');
-                uploadButtonLabel.onclick = () => {
-                    uploadButton.click();
-                };
-                classContainer.appendChild(uploadButton);
-                classContainer.appendChild(uploadButtonLabel);
-                document.getElementById('class-list').appendChild(classContainer);
-                document.getElementById('class-name').value = '';
-            }
-        }
-
-        // Select a class
-        function selectClass(className) {
-            // Clear previous selection
-            document.querySelectorAll('.class-container').forEach(container => {
-                container.classList.remove('selected');
-            });
-
-            // Update gatherDataState and highlight selected class
-            gatherDataState = CLASS_NAMES.indexOf(className);
-            const selectedClassContainer = document.getElementById(`class-${className}`);
-            if (selectedClassContainer) {
-                selectedClassContainer.classList.add('selected');
-            }
-        }
-
-        // Capture images when button is held down
-        function startCapturingImages() {
-            capturing = true;
-            captureInterval = setInterval(() => {
-                if (capturing) {
-                    captureImage();
-                }
-            }, 200); // Capture image every 200ms
-        }
-
-        function stopCapturingImages() {
-            capturing = false;
-            clearInterval(captureInterval);
-        }
-
-        // Capture image from webcam
-        function captureImage() {
-            if (gatherDataState === -1) {
-                alert('이미지를 추가할 클래스를 선택하세요.');
-                return;
-            }
-
-            const video = document.getElementById('camera');
-            const canvas = document.createElement('canvas');
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
-            canvas.getContext('2d').drawImage(video, 0, 0);
-
-            // Add image to the selected class
-            const className = CLASS_NAMES[gatherDataState];
-            const imageElement = document.createElement('img');
-            imageElement.src = canvas.toDataURL('image/png');
-            imageElement.className = 'thumbnail';
-            imageElement.onclick = function() {
-                if (confirm('이 이미지를 삭제하시겠습니까?')) {
-                    const index = trainingDataInputs.findIndex(input => input === imageElement.tensor);
-                    if (index > -1) {
-                        trainingDataInputs[index].dispose();
-                        trainingDataInputs.splice(index, 1);
-                        trainingDataOutputs.splice(index, 1);
-                    }
-                    imageElement.remove();
-                }
-            };
-            document.querySelector(`#class-${className} .image-collection`).appendChild(imageElement);
-
-            const imgTensor = tf.browser.fromPixels(canvas).resizeNearestNeighbor([MOBILE_NET_INPUT_HEIGHT, MOBILE_NET_INPUT_WIDTH]).toFloat().div(tf.scalar(255));
-            imageElement.tensor = imgTensor;
-            const features = mobilenet.predict(imgTensor.expandDims()).squeeze();
-
-            trainingDataInputs.push(features);
-            trainingDataOutputs.push(gatherDataState);
-        }
-
-        // Train model using MobileNet for transfer learning
-        async function trainAndPredict() {
-            if (trainingDataInputs.length === 0) {
-                alert('학습할 데이터가 없습니다. 이미지를 추가해주세요.');
-                return;
-            }
-
-            predict = false;
-            document.getElementById('training-progress').innerText = 'Training ...';
-            tf.util.shuffleCombo(trainingDataInputs, trainingDataOutputs);
-
-            let outputsAsTensor = tf.tensor1d(trainingDataOutputs, 'int32');
-            let oneHotOutputs = tf.oneHot(outputsAsTensor, CLASS_NAMES.length);
-            let inputsAsTensor = tf.stack(trainingDataInputs);
-
-            model = tf.sequential();
-            model.add(tf.layers.dense({inputShape: [1280], units: 128, activation: 'relu'}));
-            model.add(tf.layers.dense({units: CLASS_NAMES.length, activation: 'softmax'}));
-            model.compile({
-                optimizer: 'adam',
-                loss: 'categoricalCrossentropy',
-                metrics: ['accuracy']
-            });
-
-            model.fit(inputsAsTensor, oneHotOutputs, {
-                shuffle: true,
-                batchSize: parseInt(document.getElementById('batch-size').value),
-                epochs: parseInt(document.getElementById('epochs').value),
-                callbacks: { onEpochEnd: logProgress }
-            }).then(() => {
-                outputsAsTensor.dispose();
-                oneHotOutputs.dispose();
-                inputsAsTensor.dispose();
-                document.getElementById('training-progress').innerText = 'Trained Ok';
-                predict = true;
-                togglePredictImage();
-            });
-        }
-
-        function logProgress(epoch, logs) {
-            console.log('Data for epoch ' + epoch, logs);
-            document.getElementById('training-progress').innerText = 'Data for epoch ' + epoch + ', ' + JSON.stringify(logs);
-        }
-
-        // Toggle prediction preview
-        function togglePredictImage() {
-            const previewStatus = document.getElementById('preview-status');
-            if (!previewStatus) return;
-            if (previewing) {
-                clearInterval(previewInterval);
-                previewing = false;
-                previewStatus.style.visibility = 'hidden';
-                document.getElementById('prediction-result').innerText = '아직 예측이 없습니다';
-            } else {
-                previewInterval = setInterval(() => predictImage(), 1000); // Predict every second
-                previewing = true;
-                previewStatus.innerText = '(미리보기 실행 중)';
-                previewStatus.style.visibility = 'visible';
-            }
-        }
-
-        // Predict using trained model
-        async function predictImage() {
-            if (!model) {
-                alert('먼저 모델을 학습하세요');
-                return;
-            }
-
-            const video = document.getElementById('camera');
-            const img = tf.tidy(() => tf.browser.fromPixels(video)
-                            .resizeNearestNeighbor([MOBILE_NET_INPUT_HEIGHT, MOBILE_NET_INPUT_WIDTH])
-                            .toFloat()
-                            .div(tf.scalar(255.0))
-                            .expandDims());
-
-            const features = tf.tidy(() => mobilenet.predict(img).flatten());
-            const prediction = tf.tidy(() => model.predict(features.expandDims()));
-            const predictionData = await prediction.data();
-            const classIndex = prediction.argMax(-1).dataSync()[0];
-            const confidence = predictionData[classIndex];
-
-            const className = CLASS_NAMES[classIndex];
-            document.getElementById('prediction-result').innerText = `예측된 클래스: ${className} (신뢰도: ${(confidence * 100).toFixed(2)}%)`;
-
-            img.dispose();
-            features.dispose();
-            prediction.dispose();
-        }
-
-        // Export trained model to ZIP
-        async function exportModelAsZip() {
-            if (!model) {
-                alert('먼저 모델을 학습하세요');
-                return;
-            }
-            const zip = new JSZip();
-            const modelSavePath = 'indexeddb://trained-model';
-            await model.save(modelSavePath);
-            const modelArtifacts = await tf.io.getSaveHandlers(modelSavePath)[0].load();
-            zip.file('model.json', JSON.stringify(modelArtifacts.modelTopology));
-            for (const [index, bin] of modelArtifacts.weightData.entries()) {
-                zip.file(`weights${index}.bin`, new Uint8Array(bin));
-            }
-            zip.file('labels.txt', CLASS_NAMES.join('\n'));
-            zip.generateAsync({ type: 'blob' }).then(function(content) {
-                const a = document.createElement('a');
-                a.href = URL.createObjectURL(content);
-                a.download = 'trained-model.zip';
-                a.click();
-            });
-        }
-
-        // Import model from ZIP
-        async function importModel(event) {
-            const file = event.target.files[0];
-            if (file) {
-                const zip = await JSZip.loadAsync(file);
-                const modelJson = await zip.file('model.json').async('string');
-                const weightKeys = Object.keys(zip.files).filter(name => name.endsWith('.bin'));
-                const weightData = await Promise.all(weightKeys.map(key => zip.file(key).async('arraybuffer')));
-                const handler = tf.io.fromMemory({ modelTopology: JSON.parse(modelJson), weightData: weightData });
-                model = await tf.loadLayersModel(handler);
-
-                const labelsFile = zip.file('labels.txt');
-                if (labelsFile) {
-                    const labelsText = await labelsFile.async('string');
-                    CLASS_NAMES.splice(0, CLASS_NAMES.length, ...labelsText.split('\n'));
-                }
-                alert('모델이 성공적으로 불러와졌습니다.');
-                document.getElementById('training-progress').innerText = '모델이 불러와졌습니다.';
-            }
-        }
-
-        // Download dataset as ZIP
-        function downloadClassDataset(className) {
-            const zip = new JSZip();
-            const classFolder = zip.folder(className);
-            const imageElements = document.querySelectorAll(`#class-${className} .image-collection img`);
-            imageElements.forEach((imgElement, index) => {
-                const dataURL = imgElement.src;
-                const binary = atob(dataURL.split(',')[1]);
-                const array = [];
-                for (let i = 0; i < binary.length; i++) {
-                    array.push(binary.charCodeAt(i));
-                }
-                classFolder.file(`image_${index}.png`, new Uint8Array(array), { binary: true });
-            });
-            zip.generateAsync({ type: 'blob' }).then(function(content) {
-                const a = document.createElement('a');
-                a.href = URL.createObjectURL(content);
-                a.download = `${className}_dataset.zip`;
-                a.click();
-            });
-        }
-
-        // Upload dataset from ZIP
-        async function uploadClassDataset(event, className) {
-            const file = event.target.files[0];
-            if (file) {
-                const zip = await JSZip.loadAsync(file);
-                const imageFiles = Object.keys(zip.files).filter(name => name.endsWith('.png'));
-                for (const imageName of imageFiles) {
-                    const imageData = await zip.file(imageName).async('base64');
-                    const imgElement = document.createElement('img');
-                    imgElement.src = `data:image/png;base64,${imageData}`;
-                    imgElement.className = 'thumbnail';
-                    imgElement.onclick = function() {
-                        if (confirm('이 이미지를 삭제하시겠습니까?')) {
-                            imgElement.remove();
-                        }
-                    };
-                    document.querySelector(`#class-${className} .image-collection`).appendChild(imgElement);
-                }
-                alert(`${className} 데이터셋이 업로드되었습니다.`);
-            }
-        }
-
-        // Start the camera when the page loads
-        window.onload = () => {
-            startCamera();
-        }
-    </script>
-</body>
-</html>
+function reset() {
+  predict = false;
+  examplesCount.splice(0);
+  for (let i = 0; i < trainingDataInputs.length; i++) {
+    trainingDataInputs[i].dispose();
+  }
+  trainingDataInputs.splice(0);
+  trainingDataOutputs.splice(0);
+  STATUS.innerText = 'No data collected';
+  console.log('Tensors in memory: ' + tf.memory().numTensors);
